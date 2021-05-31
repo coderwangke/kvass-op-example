@@ -1,0 +1,174 @@
+kind: Service
+apiVersion: v1
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+   app.kubernetes.io/name: prometheus
+  ports:
+    - name: web
+      protocol: TCP
+      port: 8080
+      targetPort: web
+    - name: grpc
+      port: 10901
+      targetPort: grpc
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app.kubernetes.io/name: prometheus
+  name: prometheus-rep-0
+  namespace: monitoring
+spec:
+  # must set as Parallel
+  podManagementPolicy: Parallel
+  replicas: 0
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+      kvass/rep: "0"
+  serviceName: prometheus
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: prometheus
+        kvass/rep: "0"
+    spec:
+      containers:
+      - name: thanos
+        image: thanosio/thanos:v0.18.0
+        args:
+          - sidecar
+          - --tsdb.path=/prometheus
+          - --prometheus.url=http://localhost:9090/
+          - --grpc-address=:10901
+          - --http-address=:10902 
+        ports:
+          - name: http-sidecar
+            containerPort: 10902
+          - name: grpc
+            containerPort: 10901
+        livenessProbe:
+          httpGet:
+            port: 10902
+            path: /-/healthy
+        readinessProbe:
+          httpGet:
+            port: 10902
+            path: /-/ready
+        volumeMounts:
+          - mountPath: /prometheus
+            name: data
+      - args:
+        - --log-format=logfmt
+        - --reload-url=http://127.0.0.1:8080/-/reload
+        - --config-file=/etc/prometheus/config/prometheus.yaml.gz
+        - --config-envsubst-file=/etc/prometheus/config_out/prometheus.env.yaml
+        command:
+        - /bin/prometheus-config-reloader
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        image: quay.io/coreos/prometheus-config-reloader:v0.38.1
+        imagePullPolicy: IfNotPresent
+        name: prometheus-config-reloader
+        resources:
+          limits:
+            cpu: 100m
+            memory: 25Mi
+          requests:
+            cpu: 100m
+            memory: 25Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: FallbackToLogsOnError
+        volumeMounts:
+        - mountPath: /etc/prometheus/config
+          name: config
+        - mountPath: /etc/prometheus/config_out
+          name: config-out
+      - name: kvass
+        args:
+          - sidecar
+        image: tkestack/kvass:latest
+        imagePullPolicy: Always
+        volumeMounts:
+          - mountPath: /etc/prometheus/config_out
+            name: config-out
+          # sidecar need pvc to store targets list， see '--store.path" flag
+          # sidecar will reload targets list in initialization phase
+          - mountPath: /prometheus
+            name: data
+        ports:
+          - containerPort: 8080
+            name: web
+            protocol: TCP
+        env:
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+      - name: prometheus
+        args:
+          - --storage.tsdb.path=/prometheus
+          - --storage.tsdb.retention.time=3h
+          - --web.enable-lifecycle
+          - --storage.tsdb.no-lockfile
+          - --storage.tsdb.max-block-duration=2h
+          - --storage.tsdb.min-block-duration=2h
+          - --config.file=/etc/prometheus/config_out/prometheus.env.yaml
+          - --log.level=debug
+        image: prom/prometheus:v2.19.2
+        ports:
+          - containerPort: 9090
+            name: server
+            protocol: TCP
+        volumeMounts:
+          - mountPath: /etc/prometheus/config
+            name: config
+          - mountPath: /etc/prometheus/config_out
+            name: config-out
+          - mountPath: /prometheus
+            name: data
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      serviceAccountName: prometheus
+      securityContext:
+        runAsUser: 0
+      volumes:
+        - name: config
+          secret:
+            defaultMode: 420
+            secretName: prometheus-prom-op-prometheus-operato-prometheus
+        - emptyDir: {}
+          name: config-out
+        - emptyDir: {}
+          name: tls-assets
+  volumeClaimTemplates:
+    - metadata:
+        labels:
+          k8s-app: prometheus
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
+        storageClassName: cbs
+        volumeMode: Filesystem
+  updateStrategy:
+    rollingUpdate:
+      partition: 0
+    type: RollingUpdate

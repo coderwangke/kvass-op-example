@@ -1,0 +1,149 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: kvass-coordinator
+  labels:
+    app.kubernetes.io/name: kvass-coordinator
+spec:
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: kvass-coordinator
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/name: kvass-coordinator
+  name: kvass-coordinator
+  namespace: monitoring
+spec:
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kvass-coordinator
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/name: kvass-coordinator
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: kvass-coordinator
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+      containers:
+      - image: tkestack/kvass:latest
+        imagePullPolicy: Always
+        args:
+          - coordinator
+          - --shard.max-series=30000
+          - --shard.selector=app.kubernetes.io/name=prometheus
+          - --shard.namespace=$(NAMESPACE)
+          - --config.file=/etc/prometheus/config_out/prometheus.env.yaml
+          - --shard.max-idle-time=0
+        env:
+          - name: NAMESPACE
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.namespace
+        ports:
+          - containerPort: 9090
+            name: http
+            protocol: TCP
+        volumeMounts:
+          - mountPath: /etc/prometheus/config
+            name: config
+          - mountPath: /etc/prometheus/config_out
+            name: config-out
+        name: kvass
+        resources:
+          limits:
+            cpu: 1
+            memory: 2Gi
+          requests:
+            cpu: 250m
+            memory: 20Mi
+      - args:
+        - --log-format=logfmt
+        - --reload-url=http://127.0.0.1:9090/-/reload
+        - --config-file=/etc/prometheus/config/prometheus.yaml.gz
+        - --config-envsubst-file=/etc/prometheus/config_out/prometheus.env.yaml
+        command:
+        - /bin/prometheus-config-reloader
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        image: quay.io/coreos/prometheus-config-reloader:v0.38.1
+        imagePullPolicy: IfNotPresent
+        name: prometheus-config-reloader
+        resources:
+          limits:
+            cpu: 100m
+            memory: 25Mi
+          requests:
+            cpu: 100m
+            memory: 25Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: FallbackToLogsOnError
+        volumeMounts:
+        - mountPath: /etc/prometheus/config
+          name: config
+        - mountPath: /etc/prometheus/config_out
+          name: config-out
+      - args:
+        - --webhook-url=http://127.0.0.1:9090/-/reload
+        - --volume-dir=/etc/prometheus/rules/prometheus-p-prometheus-operator-prometheus-rulefiles-0
+        image: docker.io/jimmidyson/configmap-reload:v0.3.0
+        imagePullPolicy: IfNotPresent
+        name: rules-configmap-reloader
+        resources:
+          limits:
+            cpu: 100m
+            memory: 25Mi
+          requests:
+            cpu: 100m
+            memory: 25Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: FallbackToLogsOnError
+        volumeMounts:
+        - mountPath: /etc/prometheus/rules/prometheus-p-prometheus-operator-prometheus-rulefiles-0
+          name: prometheus-prom-op-prometheus-operato-prometheus-rulefiles-0
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 1001
+        runAsUser: 1001
+      serviceAccountName: prometheus
+      terminationGracePeriodSeconds: 600
+      volumes:
+      - name: config
+        secret:
+          defaultMode: 420
+          secretName: prometheus-prom-op-prometheus-operato-prometheus
+      - name: tls-assets
+        secret:
+          defaultMode: 420
+          secretName: prometheus-prom-op-prometheus-operato-prometheus-tls-assets
+      - emptyDir: {}
+        name: config-out
+      - configMap:
+          defaultMode: 420
+          name: prometheus-prom-op-prometheus-operato-prometheus-rulefiles-0
+        name: prometheus-prom-op-prometheus-operato-prometheus-rulefiles-0
+      - emptyDir: {}
+        name: prometheus-prom-op-prometheus-operato-prometheus-db

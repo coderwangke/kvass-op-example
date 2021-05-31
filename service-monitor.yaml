@@ -1,0 +1,12 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: metrics
+  labels:
+    release: prom-op
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: metrics
+  endpoints:
+  - port: http
